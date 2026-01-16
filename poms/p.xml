@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.hypixel.hytale</groupId>
+    <artifactId>HytaleServer-parent</artifactId>
+    <version>1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <java.targetversion>21</java.targetversion>
+
+        <revision>2026.01.13-50e69c385</revision>
+        <hytale.patchline>release</hytale.patchline>
+
+        <netty.version>4.2.9.Final</netty.version>
+        <gson.version>2.13.1</gson.version>
+        <zstd.version>1.5.7-6</zstd.version>
+        <junit.version>4.13.2</junit.version>
+        <fastutil.version>1.2-SNAPSHOT</fastutil.version>
+        <bson.version>5.6.2</bson.version>
+        <jmh.version>1.37</jmh.version>
+
+        <maven-surefire-plugin.version>3.5.4</maven-surefire-plugin.version>
+        <maven-jar-plugin.version>3.5.0</maven-jar-plugin.version>
+        <maven-assembly-plugin.version>3.8.0</maven-assembly-plugin.version>
+        <maven-shade-plugin.version>3.6.1</maven-shade-plugin.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.google.code.findbugs</groupId>
+            <artifactId>jsr305</artifactId>
+            <version>3.0.2</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.14.1</version>
+                <configuration>
+                    <release>${java.targetversion}</release>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <modules>
+        <module>AssetStore</module>
+        <module>Builtin</module>
+        <module>Builtin/ConcurrentFastUtil</module>
+        <module>Codec</module>
+        <module>Common</module>
+        <module>Component</module>
+        <module>CoreServer</module>
+        <module>Event</module>
+        <module>FunctionalInterfaces</module>
+        <module>Logger</module>
+        <module>Math</module>
+        <module>Metrics</module>
+        <module>NPC</module>
+        <module>ProceduralLibrary</module>
+        <module>Protocol</module>
+        <module>Registry</module>
+        <module>Server</module>
+        <module>SneakyThrow</module>
+        <module>Storage</module>
+        <module>Unsafe</module>
+        <module>WorldGenerator</module>
+    </modules>
+</project>

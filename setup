@@ -1,0 +1,322 @@
+#!/usr/bin/env -S java --source 25
+
+import module java.net.http;
+
+String VF_URL = "https://github.com/Vineflower/vineflower/releases/download/1.11.2/vineflower-1.11.2.jar";
+String VF_CHECKSUM = "e1e2415e7f78b34960402c4beddfc88e033d7842a23ecd132a8ec2eadd54f6bf";
+
+// Packages which don't map 1:1 with their module name
+// Key: module identifier
+// Value: packages
+Map<String, List<String>> PACKAGES = Map.ofEntries(
+    // com.hypixel
+    Map.entry("com.hypixel:ConcurrentFastUtil", List.of("com.hypixel.fastutil")),
+    // com.hypixel.hytale
+    Map.entry("com.hypixel.hytale:CoreServer", List.of("com.hypixel.hytale.server.core")),
+    Map.entry("com.hypixel.hytale:FunctionalInterfaces", List.of("com.hypixel.hytale.function")),
+    Map.entry("com.hypixel.hytale:ProceduralLibrary", List.of("com.hypixel.hytale.procedurallib")),
+    // com.hypixel.hytale.builtin
+    Map.entry("com.hypixel.hytale.builtin:NPC", List.of("com.hypixel.hytale.server.npc")),
+    Map.entry("com.hypixel.hytale.builtin:WorldGenerator", List.of("com.hypixel.hytale.builtin.worldgen")),
+    // com.hypixel.hytale.builtin.adventure
+    Map.entry("com.hypixel.hytale.builtin.adventure:Beds", List.of("com.hypixel.hytale.builtin.beds")),
+    Map.entry("com.hypixel.hytale.builtin.adventure:Portals", List.of("com.hypixel.hytale.builtin.portals"))
+);
+
+// Some modules need to be located differently than their groupId would imply based on the parent declaration in their pom.xml
+// Key: module path based on groupId
+// Value: actual module path
+Map<String, String> MODULES = Map.ofEntries(
+    Map.entry("ConcurrentFastUtil", "Builtin/ConcurrentFastUtil"),
+    Map.entry("Builtin/NPC", "NPC"),
+    Map.entry("Builtin/WorldGenerator", "WorldGenerator")
+);
+
+void main(String[] args) throws Throwable {
+    if (args.length != 1) {
+        printHelp();
+        System.exit(1);
+    }
+
+    if (args[0].matches("-{1,2}[hH](?:[eE][lL][pP])?")) {
+        // If the argument is asking for help, don't exit with an error code
+        printHelp();
+        System.exit(0);
+    }
+
+    var serverJar = Path.of(args[0]);
+    if (!Files.isRegularFile(serverJar)) {
+        printHelp();
+        System.exit(1);
+    }
+
+    var projectDir = Path.of("HytaleServer");
+
+    var decompDir = decompileJar(serverJar);
+    setupProject(serverJar, decompDir, projectDir);
+
+    IO.println("Done.");
+}
+
+Path decompileJar(Path serverJar) throws Throwable {
+    var outputDir = Path.of("target/decompile/out");
+
+    var vf = getVineFlower();
+
+    IO.println("Decompiling HytaleServer jar...");
+
+    var decompArgs = new String[]{
+        // Treat some known structures as synthetic even when not explicitly set
+        "--synthetic-not-set=true",
+        // Fold branches of ternary expressions that have boolean true and false constants
+        "--ternary-constant-simplification=true",
+        // Give the decompiler information about the Java runtime
+        "--include-runtime=current",
+        // Decompile complex constant-dynamic expressions:
+        // Some constant-dynamic expressions can't be converted to a single Java expression with
+        // identical run-time behaviour. This decompiles them to a similar non-lazy expression,
+        // marked with a comment
+        "--decompile-complex-constant-dynamic=true",
+        // Indent String
+        "--indent-string=    ",
+        // Process inner classes and add them to the decompiled output.
+        "--decompile-inner=true", // default
+        // Removes any methods that are marked as bridge from the decompiled output.
+        "--remove-bridge=true", // default
+        // Decompile generics in classes, methods, fields, and variables.
+        "--decompile-generics=true", // default
+        // Encode non-ASCII characters in string and character literals as Unicode escapes.
+        "--ascii-strings=false", // default
+        // Removes any methods and fields that are marked as synthetic from the decompiled output.
+        "--remove-synthetic=true", // default
+        // Remove braces on simple, one line, lambda expressions.
+        "--inline-simple-lambdas=true", // default
+        // Ignore bytecode that is malformed.
+        "--ignore-invalid-bytecode=false", // default
+        // Map Bytecode to source lines.
+        "--bytecode-source-mapping=true",
+        // Skip copying non-class files from the input folder or file to the output
+        "--skip-extra-files=true",
+        // Display override annotations for methods known to the decompiler
+        "--override-annotation=false",
+        // Write the decompiled source to a folder
+        "--folder",
+        "--only=com/hypixel",
+    };
+
+    recursivelyDelete(outputDir);
+
+    var args = new ArrayList<>(List.of(findJava().toString(), "-Xmx4G", "-jar", vf.toString()));
+    args.addAll(Arrays.asList(decompArgs));
+    args.addAll(List.of(serverJar.toString(), outputDir.toString()));
+
+    var process = new ProcessBuilder()
+        .command(args)
+        .redirectErrorStream(true)
+        .start();
+    // Very annoyingly using `.inheritIO` in `ProcessBuilder` above doesn't work on Windows, so we need to do this manually
+    try (var reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+        reader.lines().forEach(IO::println);
+    }
+    var result = process.waitFor();
+    if (result != 0) {
+        IO.println("Decompilation failed with exit code " + result);
+        System.exit(1);
+    }
+
+    return outputDir;
+}
+
+void setupProject(Path serverJar, Path decompDir, Path projectDir) throws Throwable {
+    IO.println("Setting up project...");
+
+    recursivelyDelete(projectDir);
+
+    try (var fs = FileSystems.newFileSystem(serverJar)) {
+        var root = fs.getPath("/");
+        var mavenDir = root.resolve("META-INF/maven");
+        List<Path> directories;
+        try (var stream = Files.list(mavenDir)) {
+            var matcher = fs.getPathMatcher("glob:/META-INF/maven/com.hypixel*");
+            directories = stream.filter(matcher::matches).toList();
+        }
+
+        var modules = new HashMap<String, List<String>>();
+        for (var dir : directories) {
+            modules.putAll(collectModules(mavenDir, dir, projectDir));
+        }
+
+        // We want to move packages depth-first so that sub-packages don't get moved before we process them
+        var entries = modules.entrySet().stream()
+            .sorted(Comparator.<Map.Entry<String, List<String>>, Integer>comparing((e) ->
+                e.getValue().stream().mapToInt(p -> p.split("\\.").length).max().orElse(0)
+            ).reversed())
+            .toList();
+        for (var entry : entries) {
+            var modulePath = entry.getKey();
+            var packages = entry.getValue();
+
+            var targetDir = projectDir.resolve(MODULES.getOrDefault(modulePath, modulePath), "src", "main", "java");
+            Files.createDirectories(targetDir);
+
+            for (var aPackage : packages) {
+                var names = aPackage.split("\\.");
+                if (names.length == 0) {
+                    continue;
+                }
+                var otherNames = new String[names.length - 1];
+                System.arraycopy(names, 1, otherNames, 0, otherNames.length);
+                var sourceDir = decompDir.resolve(names[0], otherNames);
+                if (!Files.isDirectory(sourceDir)) {
+                    IO.println("WARN: Package not: " + aPackage + " for module: " + modulePath);
+                    continue;
+                }
+
+                var targetPackageDir = targetDir.resolve(names[0], otherNames);
+                Files.createDirectories(targetPackageDir.getParent());
+                Files.move(sourceDir, targetPackageDir);
+            }
+        }
+    }
+
+    // Final cleanup, shove whatever is left into CoreServer
+    var coreServer = projectDir.resolve("CoreServer", "src", "main", "java");
+    var sourceDir = decompDir.resolve("com", "hypixel");
+    List<Path> leftOverFiles;
+    try (var stream = Files.walk(sourceDir)) {
+        leftOverFiles = stream.filter(Files::isRegularFile).toList();
+    }
+    for (final Path leftOver : leftOverFiles) {
+        var relativePath = decompDir.relativize(leftOver);
+        var targetPath = coreServer.resolve(relativePath);
+        Files.createDirectories(targetPath.getParent());
+        Files.move(leftOver, targetPath);
+    }
+
+    // Now copy our manually written pom files
+    var pomsDir = Path.of("poms");
+    List<Path> poms;
+    try (var stream = Files.walk(pomsDir)) {
+        poms = stream.filter(p -> p.getFileName().toString().equals("p.xml")).toList();
+    }
+    for (var pom : poms) {
+        var relativePath = pomsDir.relativize(pom);
+        var targetPath = projectDir.resolve(relativePath).resolveSibling("pom.xml");
+        Files.copy(pom, targetPath);
+    }
+}
+
+Map<String, List<String>> collectModules(Path mavenDir, Path dir, Path projectDir) throws Throwable {
+    var groupId = mavenDir.relativize(dir).getFileName().toString();
+
+    List<Path> projects;
+    try (var stream = Files.list(dir)) {
+        projects = stream.toList();
+    }
+
+    var modules = new HashMap<String, List<String>>();
+    for (var project : projects) {
+        if (!Files.isDirectory(project)) {
+            IO.println("Encountered unexpected file: " + project);
+            continue;
+        }
+        var artifactId = project.getFileName().toString();
+        var locator = groupId + ":" + artifactId;
+
+        var packageNames = PACKAGES.getOrDefault(locator, List.of(groupId + "." + artifactId.toLowerCase(Locale.ENGLISH)));
+
+        var fullModuleName = groupId + "." + artifactId;
+        fullModuleName = fullModuleName.substring("com.hypixel.".length());
+        fullModuleName = fullModuleName.startsWith("hytale.") ? fullModuleName.substring("hytale.".length()) : fullModuleName;
+        var modulePath = Arrays.stream(fullModuleName.split("\\."))
+            .map(s -> s.substring(0, 1).toUpperCase(Locale.ENGLISH) + s.substring(1))
+            .collect(Collectors.joining("/"));
+
+        modules.put(modulePath, packageNames);
+
+        var moduleDir = projectDir.resolve(MODULES.getOrDefault(modulePath, modulePath));
+        Files.createDirectories(moduleDir);
+        var modulePom = moduleDir.resolve("pom.xml");
+        var sourcePom = project.resolve("pom.xml");
+
+        Files.copy(sourcePom, modulePom);
+    }
+
+    return modules;
+}
+
+Path getVineFlower() throws Throwable {
+    var decompDir = Path.of("target/decompile");
+    Files.createDirectories(decompDir);
+
+    var vfFile = decompDir.resolve("vineflower.jar");
+    if (checkVineflower(vfFile)) {
+        return vfFile;
+    }
+
+    if (Files.exists(vfFile)) {
+        IO.println("VineFlower is invalid or out of date, re-downloading...");
+    } else {
+        IO.println("VineFlower is missing, downloading...");
+    }
+
+    try (var client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.ALWAYS).build()) {
+        var req = HttpRequest.newBuilder().GET().uri(URI.create(VF_URL)).build();
+        client.send(req, HttpResponse.BodyHandlers.ofFile(vfFile));
+    }
+
+    if (!checkVineflower(vfFile)) {
+        IO.println("VineFlower failed to download correctly, exiting...");
+        System.exit(1);
+    }
+
+    return vfFile;
+}
+
+boolean checkVineflower(Path vfFile) throws Throwable {
+    if (Files.notExists(vfFile)) {
+        return false;
+    }
+    var expectedChecksum = HexFormat.of().parseHex(VF_CHECKSUM);
+    var digest = MessageDigest.getInstance("SHA-256");
+    final byte[] vfBytes = Files.readAllBytes(vfFile);
+    var actualChecksum = digest.digest(vfBytes);
+    return Arrays.equals(expectedChecksum, actualChecksum);
+}
+
+Path findJava() {
+    var home = System.getProperty("java.home");
+    var bin = Path.of(home, "bin");
+    var javaExec = bin.resolve("java");
+    if (Files.exists(javaExec)) {
+        // macOS or linux
+        return javaExec.toAbsolutePath();
+    }
+    javaExec = bin.resolve("javaw.exe");
+    if (Files.exists(javaExec)) {
+        // Windows
+        return javaExec.toAbsolutePath();
+    }
+    IO.println("Could not find java executable, unknown error.");
+    System.exit(1);
+    throw new RuntimeException();
+}
+
+void recursivelyDelete(Path dir) throws Throwable {
+    if (Files.notExists(dir)) {
+        return;
+    }
+    List<Path> files;
+    try (var stream = Files.walk(dir)) {
+        files = stream.sorted(Comparator.reverseOrder()).toList();
+    }
+    for (final Path file : files) {
+        Files.deleteIfExists(file);
+    }
+}
+
+void printHelp() {
+    IO.println("Usage: ./setup <hytale_server.jar>");
+    IO.println();
+    IO.println("<hytale_server.jar> should be the server jar downloaded using the Hytale server downloader.");
+}
